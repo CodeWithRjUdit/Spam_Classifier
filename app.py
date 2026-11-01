@@ -1,78 +1,6 @@
-from pathlib import Path
-import pickle
-import string
-
-import nltk
 import streamlit as st
-from nltk.corpus import stopwords
-from nltk.stem import PorterStemmer
 
-
-BASE_DIR = Path(__file__).resolve().parent
-
-
-@st.cache_resource
-def load_model_assets():
-    """Load the model and its matching TF-IDF vectorizer once per app process."""
-    model_path = BASE_DIR / "model.pkl"
-    vectorizer_path = BASE_DIR / "vectorizer.pkl"
-
-    if not model_path.is_file() or not vectorizer_path.is_file():
-        missing = [
-            path.name
-            for path in (model_path, vectorizer_path)
-            if not path.is_file()
-        ]
-        raise FileNotFoundError(
-            "Required model files are missing: " + ", ".join(missing)
-        )
-
-    with model_path.open("rb") as model_file:
-        model = pickle.load(model_file)
-
-    with vectorizer_path.open("rb") as vectorizer_file:
-        vectorizer = pickle.load(vectorizer_file)
-
-    return model, vectorizer
-
-
-@st.cache_resource
-def load_text_processing_resources():
-    """Download NLTK data only when it is not already available."""
-    resources = {
-        "corpora/stopwords": "stopwords",
-        "tokenizers/punkt": "punkt",
-        "tokenizers/punkt_tab": "punkt_tab",
-    }
-
-    for resource_path, package_name in resources.items():
-        try:
-            nltk.data.find(resource_path)
-        except LookupError:
-            downloaded = nltk.download(package_name, quiet=True)
-            if not downloaded:
-                raise RuntimeError(
-                    f"Could not download the NLTK resource: {package_name}"
-                )
-
-    english_stopwords = set(stopwords.words("english"))
-    stemmer = PorterStemmer()
-    return english_stopwords, stemmer
-
-
-def transform_text(text, english_stopwords, stemmer):
-    """Apply the same preprocessing used when the classifier was trained."""
-    text = text.lower()
-    tokens = nltk.word_tokenize(text)
-    filtered_tokens = [word for word in tokens if word.isalnum()]
-
-    final_tokens = [
-        stemmer.stem(word)
-        for word in filtered_tokens
-        if word not in english_stopwords and word not in string.punctuation
-    ]
-
-    return " ".join(final_tokens)
+from spam_classifier.inference import classify_message, load_classifier
 
 
 st.set_page_config(
@@ -83,16 +11,13 @@ st.set_page_config(
 
 st.title("SMS Spam Classifier")
 st.write(
-    "Enter a text message below to check whether the trained machine-learning "
-    "model classifies it as **spam** or **not spam**."
+    "Check whether a text message resembles spam or legitimate (ham) messages "
+    "learned by the machine-learning model."
 )
-st.caption(
-    "Model: Multinomial Naive Bayes · Text features: TF-IDF"
-)
+st.caption("Multinomial Naive Bayes · TF-IDF text features")
 
 try:
-    model, vectorizer = load_model_assets()
-    english_stopwords, stemmer = load_text_processing_resources()
+    classifier = load_classifier()
 except Exception as exc:
     st.error("The classifier could not be initialized.")
     st.exception(exc)
@@ -101,8 +26,9 @@ except Exception as exc:
 with st.form("spam_classifier_form"):
     message = st.text_area(
         "Message to check",
-        placeholder="Example: Congratulations! You have won a free prize...",
-        height=150,
+        placeholder="Paste or type a message here…",
+        height=160,
+        max_chars=10000,
     )
     submitted = st.form_submit_button("Classify message", type="primary")
 
@@ -110,27 +36,25 @@ if submitted:
     if not message.strip():
         st.warning("Please enter a message before classifying it.")
     else:
-        processed_message = transform_text(
-            message,
-            english_stopwords,
-            stemmer,
-        )
-        message_vectorized = vectorizer.transform([processed_message])
-        prediction = int(model.predict(message_vectorized)[0])
+        try:
+            label = classify_message(message, classifier)
+            st.divider()
+            if label == 1:
+                st.error("Prediction: Spam")
+                st.write(
+                    "The model identifies this message as spam. Treat links, "
+                    "payment requests, and requests for personal information "
+                    "with caution."
+                )
+            else:
+                st.success("Prediction: Not spam (ham)")
+                st.write("The model identifies this message as a legitimate message.")
+        except Exception as exc:
+            st.error("The message could not be processed.")
+            st.exception(exc)
 
-        st.divider()
-        if prediction == 1:
-            st.error("Spam message")
-            st.write(
-                "The model classifies this message as **spam**. "
-                "Be cautious with links, payment requests, and requests for "
-                "personal information."
-            )
-        else:
-            st.success("Not spam")
-            st.write("The model classifies this message as **not spam**.")
-
+st.divider()
 st.caption(
-    "This is a machine-learning demonstration. Predictions can be incorrect; "
-    "do not use the result as the only basis for deciding whether a message is safe."
+    "Educational demonstration only. Model predictions can be wrong; "
+    "do not use this result as the sole basis for deciding whether a message is safe."
 )
